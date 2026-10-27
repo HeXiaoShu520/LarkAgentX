@@ -154,15 +154,73 @@ def _interactive_login():
 def cmd_send(args):
     client = LarkClient(LarkAuth())
     text = ' '.join(args.text)
-    msg_id = client.send_msg(text, args.chat_id, root_id=args.root)
+    title = getattr(args, 'title', None)
+    if title:
+        # 字面 \n 转真换行:agent 用单行命令也能发多段,不必在引号里写多行
+        text = text.replace('\\n', '\n')
+        msg_id = client.send_post(title, text, args.chat_id, root_id=args.root)
+        msg_type, msg_type_name, content = 2, 'POST', f'[富文本] {title}\n{text}'
+    else:
+        msg_id = client.send_msg(text, args.chat_id, root_id=args.root)
+        msg_type, msg_type_name, content = 4, 'TEXT', text
     if msg_id:
         st = Storage()
         # 用服务端 id 落库,监听收到回显时会补全这条而不是再插一条
-        st.save_message({'msg_id': msg_id, 'chat_id': args.chat_id, 'chat_type': 0, 'scope': 'topic' if args.root else 'chat', 'anchor': args.root or '', 'from_id': client.auth.user_id, 'msg_type': 4, 'msg_type_name': 'TEXT', 'content': text, 'create_time': int(datetime.now().timestamp())}, sender_name='我', direction='out')
+        st.save_message({'msg_id': msg_id, 'chat_id': args.chat_id, 'chat_type': 0, 'scope': 'topic' if args.root else 'chat', 'anchor': args.root or '', 'from_id': client.auth.user_id, 'msg_type': msg_type, 'msg_type_name': msg_type_name, 'content': content, 'create_time': int(datetime.now().timestamp())}, sender_name='我', direction='out')
         print(f'已发送 msg_id={msg_id}')
         return 0
     print('发送失败', file=sys.stderr)
     return 1
+
+
+def cmd_card(args):
+    """发卡片:走开放平台用户身份(lark-cli),逆向协议本身没有卡片字段。"""
+    from .card import CardSendError, send_card
+    text = ' '.join(args.text).replace('\\n', '\n')
+    try:
+        msg_id = send_card(args.chat_id, text, args.sign)
+    except CardSendError as e:
+        print(f'发卡片失败: {e}', file=sys.stderr)
+        return 1
+    print(f'已发送 msg_id={msg_id}')
+    return 0
+
+
+def cmd_reply(args):
+    """回复消息:能对上开放平台会话就发卡片(带署名),对不上就降级。
+    降级链是 卡片 -> 富文本 POST -> 纯文本,卡片失败通常是跨租户或会话没对上。"""
+    from .card import CardSendError, send_card
+    from .cardmap import resolve_oc
+    client = LarkClient(LarkAuth())
+    text = ' '.join(args.text).replace('\\n', '\n')
+    st = Storage()
+    oc_chat_id = resolve_oc(args.chat_id, st.get_chat_name(args.chat_id), text)
+    msg_id, msg_type, msg_type_name, content = '', 0, '', text
+    if oc_chat_id:
+        try:
+            msg_id = send_card(oc_chat_id, text, args.sign)
+            msg_type, msg_type_name = 14, 'CARD'
+            print(f'已发送(卡片) msg_id={msg_id}')
+        except CardSendError as e:
+            logger.warning(f'发卡片失败,降级富文本: {e}')
+    if not msg_id:
+        if args.title:
+            title = args.title
+            msg_id = client.send_post(title, text, args.chat_id, root_id=args.root)
+            msg_type, msg_type_name, content = 2, 'POST', f'[富文本] {title}\n{text}'
+        else:
+            msg_id = client.send_msg(text, args.chat_id, root_id=args.root)
+            msg_type, msg_type_name = 4, 'TEXT'
+        if msg_id:
+            print(f'已发送(降级) msg_id={msg_id}')
+    if not msg_id:
+        print('发送失败', file=sys.stderr)
+        return 1
+    # 用服务端 id 落库,监听收到回显时会补全这条而不是再插一条;
+    # 卡片进不了话题,所以只有降级发送时 anchor 才记 root
+    scope, anchor = ('chat', '') if msg_type == 14 else ('topic' if args.root else 'chat', args.root or '')
+    st.save_message({'msg_id': msg_id, 'chat_id': args.chat_id, 'chat_type': 0, 'scope': scope, 'anchor': anchor, 'from_id': client.auth.user_id, 'msg_type': msg_type, 'msg_type_name': msg_type_name, 'content': content, 'create_time': int(datetime.now().timestamp())}, sender_name='我', direction='out')
+    return 0
 
 
 def cmd_config(args):
@@ -406,11 +464,24 @@ def main():
     p.add_argument('--file', help='从文件读 cookie')
     p.add_argument('--region', choices=list(REGIONS), help='qr/import 登录的区域: feishu=飞书(国内版) lark=Lark(国际版);默认沿用已有凭证,无凭证时取 LARKX_REGION')
     p.set_defaults(fn=cmd_auth)
-    p = sub.add_parser('send', help='发送文本消息')
+    p = sub.add_parser('send', help='发送消息;带 --title 时发富文本(标题+分段正文)')
     p.add_argument('chat_id')
     p.add_argument('text', nargs='+')
+    p.add_argument('--title', help='标题;带上它就走 POST 富文本,正文里的字面 \\n 会转成换行分段')
     p.add_argument('--root', help='话题/线程根消息 id,回复进话题')
     p.set_defaults(fn=cmd_send)
+    p = sub.add_parser('card', help='发卡片;走开放平台用户身份,只适用于同租户会话(oc_xxx)')
+    p.add_argument('chat_id', help='开放平台 chat_id(oc_xxx),不是本地数字 id')
+    p.add_argument('text', nargs='+')
+    p.add_argument('--sign', default='✦ 临江仙', help='尾部灰色小字署名;传空字符串则不署名')
+    p.set_defaults(fn=cmd_card)
+    p = sub.add_parser('reply', help='回复消息;能对上开放平台会话就发卡片(尾部带小字署名),否则降级富文本')
+    p.add_argument('chat_id', help='本地数字 chat_id')
+    p.add_argument('text', nargs='+')
+    p.add_argument('--title', help='标题;只在降级富文本时用得上,卡片本身不加标题')
+    p.add_argument('--root', help='话题/线程根消息 id,回复进话题')
+    p.add_argument('--sign', default='✦ 临江仙', help='卡片尾部小字署名')
+    p.set_defaults(fn=cmd_reply)
     p = sub.add_parser('config', help='查看生效中的配置(配置项写在 .env 里)')
     p.set_defaults(fn=cmd_config)
     p = sub.add_parser('chats', help='列出本地会话')

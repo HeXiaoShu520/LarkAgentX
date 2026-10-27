@@ -35,6 +35,36 @@ def build_send_message_packet(text: str, chat_id: str, request_id: str, root_id:
     return wrap_packet(5, req, request_id)
 
 
+def build_send_post_packet(title: str, text: str, chat_id: str, request_id: str, root_id: str=None, thread_chat: bool=False) -> P.Packet:
+    """POST(富文本)消息:标题 + 逐行成段的正文。空行丢弃,全空时补一个空格段,否则服务端判为无内容。"""
+    req = P.PutMessageRequest()
+    req.type = 2
+    req.chatId = str(chat_id)
+    req.cid = generate_request_cid()
+    req.isNotified = 1
+    req.version = 1
+    if root_id:
+        req.rootId = str(root_id)
+        req.parentId = str(root_id)
+        if not thread_chat:
+            req.isReplyInThread = True
+    rt = req.content.richText
+    rt.innerText = str(text)
+    if title:
+        req.content.title = str(title)
+    lines = [line.rstrip() for line in str(text).splitlines() if line.strip()] or [' ']
+    for line in lines:
+        # 段落元素自己带 TextProperty;再套一层 childIds 指向 TEXT 会被服务端 400 拒掉
+        para_id = generate_request_cid()
+        rt.elementIds.append(para_id)
+        para = rt.elements.dictionary[para_id]
+        para.tag = 3
+        tp = P.TextProperty()
+        tp.content = line
+        para.property = tp.SerializeToString()
+    return wrap_packet(5, req, request_id)
+
+
 def build_create_chat_packet(user_id: str, request_id: str) -> P.Packet:
     req = P.PutChatRequest()
     req.type = 1

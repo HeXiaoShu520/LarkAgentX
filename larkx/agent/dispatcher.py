@@ -4,10 +4,11 @@ from xml.sax.saxutils import escape, quoteattr
 
 from loguru import logger
 
+from ..cardmap import resolve_oc
 from ..config import load_config
 
 INSTRUCTIONS = '以上是飞书会话里新到的一条消息(XML 里有会话/发送者/内容)。你是这个数字人,完整对话历史你都有。如果对方也是机器人且只是互相客套寒暄,直接结束不要再接话。'
-OUTPUT_RULES = '不需要回复就直接结束,不要解释、不要复述消息。'
+OUTPUT_RULES = '回复必须用 Bash 工具真正执行上面的命令,只把命令写成文字不会发出任何消息。正文段落之间用 \\n 分隔;飞书卡片支持加粗、列表、行内代码、链接这几样 markdown,表格和标题层级不支持。末尾的小字署名由程序自动加,不要自己写。不需要回复就直接结束,不要解释、不要复述消息。'
 
 
 def _ts(msg: dict) -> str:
@@ -54,6 +55,7 @@ class AgentDispatcher:
         self.backend = backend
         self.reply_fn = reply_fn
         self.workers = {}
+        self._resolved = set()
 
     def session_key_of(self, msg: dict) -> str:
         scope = self.cfg['context_scope']
@@ -148,10 +150,16 @@ class AgentDispatcher:
         body = build_xml_message(msg)
         chat_id = str(msg['chat_id'])
         root_id = (msg.get('anchor') or '') or None
-        reply_cmd = f'lark send {chat_id} "<回复内容>"'
+        # 收到消息的这一刻才知道会话名和正文,重名会话只能趁现在核对;错过就只能等下一轮
+        if chat_id not in self._resolved:
+            self._resolved.add(chat_id)
+            oc = await asyncio.to_thread(resolve_oc, chat_id, msg.get('_chat_name') or '', msg.get('content') or '')
+            logger.info(f'[{session_key}] 卡片通道: {chat_id} -> {oc or "未匹配,发回复时降级富文本"}')
+        reply_cmd = f'lark reply {chat_id}'
         if root_id:
             reply_cmd += f' --root {root_id}'
-        rules = f'要回复就执行: {reply_cmd}\n' + OUTPUT_RULES
+        reply_cmd += ' "<回复正文>"'
+        rules = f'要回复就用 Bash 工具执行: {reply_cmd}\n' + OUTPUT_RULES
         if self.cfg.get('system_prompt'):
             instructions = self.cfg['system_prompt'] + '\n' + rules
         else:

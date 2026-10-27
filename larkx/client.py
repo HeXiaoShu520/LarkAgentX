@@ -145,10 +145,8 @@ class LarkClient:
         resp.raise_for_status()
         return resp.content
 
-    def send_msg(self, text: str, chat_id: str, root_id: str=None):
-        """返回服务端分配的消息 id;未能确认发送成功(请求失败,或响应里拿不到 id)时返回 None。"""
-        thread_chat = bool(root_id) and self.is_thread_chat(chat_id)
-        pkt = builders.build_send_message_packet(text, str(chat_id), generate_long_request_id(), root_id=root_id, thread_chat=thread_chat)
+    def _put_message(self, pkt):
+        """发出 PutMessage 并返回服务端消息 id;未能确认发送成功时返回 None。"""
         try:
             content = self._gateway_post(pkt)
         except Exception as e:
@@ -163,6 +161,19 @@ class LarkClient:
             logger.error('服务端已接受发送请求,但响应里没有消息 id,无法确认是否发出')
             return None
         return msg_id
+
+    def send_msg(self, text: str, chat_id: str, root_id: str=None):
+        """返回服务端分配的消息 id;未能确认发送成功(请求失败,或响应里拿不到 id)时返回 None。"""
+        thread_chat = bool(root_id) and self.is_thread_chat(chat_id)
+        pkt = builders.build_send_message_packet(text, str(chat_id), generate_long_request_id(), root_id=root_id, thread_chat=thread_chat)
+        return self._put_message(pkt)
+
+    def send_post(self, title: str, text: str, chat_id: str, root_id: str=None):
+        """发 POST 富文本消息(标题 + 分段正文);返回值语义同 send_msg。"""
+        thread_chat = bool(root_id) and self.is_thread_chat(chat_id)
+        pkt = builders.build_send_post_packet(title, text, str(chat_id), generate_long_request_id(), root_id=root_id, thread_chat=thread_chat)
+        return self._put_message(pkt)
+
 
     def search(self, query: str):
         pkt = builders.build_search_packet(query, generate_long_request_id(), self.auth.region.locale)
