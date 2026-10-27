@@ -61,6 +61,9 @@ Lark Agentx 是一个现代化的 Python 应用程序，能够:
 | `lark auth import` | 粘贴 cookie 登录 |
 | `lark auth check` | 校验凭证是否过期 |
 | `lark send <chat_id> <text>` | 发送文本消息(`--root` 回复进话题) |
+| `lark image <chat_id\|oc_xxx> <图>` | 发一张图片或 GIF(本地路径 / URL / `img_xxx`) |
+| `lark card <oc_xxx> <text>` | 发卡片,尾部带灰色小字署名(`--image` 内嵌图片或动图) |
+| `lark reply <chat_id> <text>` | 回复:能对上开放平台会话就发卡片(带署名、可带图),否则降级富文本 |
 | `lark listen` | 常驻: WS 收消息入库 |
 | `lark listen --agent` | 常驻: 收消息 + 接 coding agent 自动回复 |
 | `lark messages <chat_id>` | 读本地消息记录(`--anchor` 只看话题) |
@@ -188,8 +191,9 @@ python main.py                                   # 之后所有命令自动走�
 </message>
 ```
 
-- **回复**: agent 是完整的 coding agent,它的 stdout 不重要——**它想回复就自己执行 `lark send <chat_id> "<内容>"`**(prompt 里已把当前会话/话题的参数填好,话题消息带 `--root <anchor>`);不想回就直接结束,不是所有话都需要它接
-- **回环闭合**: agent 通过 `lark send` 发出的消息经 WS 回显回来,自动入库并标记 `direction=out`(日志里青色区分);自己账号的消息永远不会再进 agent 队列,不会自回环
+- **回复**: agent 是完整的 coding agent,它的 stdout 不重要——**它想回复就自己执行 `lark reply <chat_id> "<内容>"`**(prompt 里已把当前会话/话题的参数填好,话题消息带 `--root <anchor>`);要展示图片或动图就加 `--image <本地路径>`;不想回就直接结束,不是所有话都需要它接
+- **卡片通道**: `lark reply` 先按会话名把逆向数字 chat_id 换算成开放平台 `oc_xxx`,换到就发卡片(尾部自动带灰色小字署名),换不到(如跨租户的外部联系人)自动降级成富文本 POST,此时 `--image` 的图会被丢弃并记一条 warning
+- **回环闭合**: agent 通过 `lark reply` 发出的消息经 WS 回显回来,自动入库并标记 `direction=out`(日志里青色区分);自己账号的消息永远不会再进 agent 队列,不会自回环
 
 ### 控制命令(写死,优先级低于触发规则)
 

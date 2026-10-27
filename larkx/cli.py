@@ -178,11 +178,30 @@ def cmd_card(args):
     from .card import CardSendError, send_card
     text = ' '.join(args.text).replace('\\n', '\n')
     try:
-        msg_id = send_card(args.chat_id, text, args.sign)
+        msg_id = send_card(args.chat_id, text, args.sign, args.image or '')
     except CardSendError as e:
         print(f'发卡片失败: {e}', file=sys.stderr)
         return 1
     print(f'已发送 msg_id={msg_id}')
+    return 0
+
+
+def cmd_image(args):
+    """发纯图片/GIF;传数字 chat_id 时先换算成 oc_xxx(图片只有开放平台通道)。"""
+    from .card import CardSendError, send_image
+    from .cardmap import resolve_oc
+    oc_chat_id = args.chat_id
+    if not oc_chat_id.startswith('oc_'):
+        oc_chat_id = resolve_oc(args.chat_id, Storage().get_chat_name(args.chat_id), '')
+        if not oc_chat_id:
+            print('该会话没有对应的开放平台会话;图片发不出去,逆向协议也没有可复用的 image_key', file=sys.stderr)
+            return 1
+    try:
+        msg_id = send_image(oc_chat_id, args.media)
+    except CardSendError as e:
+        print(f'发图片失败: {e}', file=sys.stderr)
+        return 1
+    print(f'已发送(图片) msg_id={msg_id}')
     return 0
 
 
@@ -198,12 +217,15 @@ def cmd_reply(args):
     msg_id, msg_type, msg_type_name, content = '', 0, '', text
     if oc_chat_id:
         try:
-            msg_id = send_card(oc_chat_id, text, args.sign)
+            msg_id = send_card(oc_chat_id, text, args.sign, args.image or '')
             msg_type, msg_type_name = 14, 'CARD'
             print(f'已发送(卡片) msg_id={msg_id}')
         except CardSendError as e:
             logger.warning(f'发卡片失败,降级富文本: {e}')
     if not msg_id:
+        if args.image:
+            # 降级链只有逆向协议的富文本/文本,那边没有开放平台的 image_key,图只能丢
+            logger.warning('已降级发送:图片/动图未发送,逆向通道用不了开放平台的图片')
         if args.title:
             title = args.title
             msg_id = client.send_post(title, text, args.chat_id, root_id=args.root)
@@ -474,13 +496,19 @@ def main():
     p.add_argument('chat_id', help='开放平台 chat_id(oc_xxx),不是本地数字 id')
     p.add_argument('text', nargs='+')
     p.add_argument('--sign', default='✦ 临江仙', help='尾部灰色小字署名;传空字符串则不署名')
+    p.add_argument('--image', help='卡片里内嵌一张图片或动图:本地路径(相对或绝对) / http(s) URL / img_xxx')
     p.set_defaults(fn=cmd_card)
+    p = sub.add_parser('image', help='发一条纯图片或 GIF;传 oc_xxx 直发,传数字 chat_id 自动换算')
+    p.add_argument('chat_id', help='开放平台 oc_xxx 或本地数字 chat_id')
+    p.add_argument('media', help='本地图片/GIF 路径(相对或绝对) / http(s) URL / img_xxx')
+    p.set_defaults(fn=cmd_image)
     p = sub.add_parser('reply', help='回复消息;能对上开放平台会话就发卡片(尾部带小字署名),否则降级富文本')
     p.add_argument('chat_id', help='本地数字 chat_id')
     p.add_argument('text', nargs='+')
     p.add_argument('--title', help='标题;只在降级富文本时用得上,卡片本身不加标题')
     p.add_argument('--root', help='话题/线程根消息 id,回复进话题')
     p.add_argument('--sign', default='✦ 临江仙', help='卡片尾部小字署名')
+    p.add_argument('--image', help='卡片里内嵌一张图片或动图;降级发送时这张图会丢')
     p.set_defaults(fn=cmd_reply)
     p = sub.add_parser('config', help='查看生效中的配置(配置项写在 .env 里)')
     p.set_defaults(fn=cmd_config)
